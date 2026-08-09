@@ -32,12 +32,6 @@ def get_capacity(db: Session = Depends(get_db)):
 
 @router.post("/checkout/init", response_model=CheckoutInitResponse)
 def init_checkout(payload: CheckoutInitRequest, db: Session = Depends(get_db)):
-    # Hard stop server-side. Never trust a frontend "tickets remaining" counter alone.
-    # NOTE: at very high simultaneous demand right at the cap, two people could both pass
-    # this check before either finishes paying (only "paid" tickets count against the cap,
-    # by design, so an abandoned checkout never blocks a real ticket). For 500 tickets and
-    # the traffic you're expecting this is a fine trade-off. If you ever run a much bigger,
-    # bigger-rush event, add a short-lived "reservation" row instead of just checking here.
     if _sold_count(db) >= settings.capacity:
         raise HTTPException(status_code=409, detail="Event is sold out")
 
@@ -73,7 +67,6 @@ def init_checkout(payload: CheckoutInitRequest, db: Session = Depends(get_db)):
     )
 
     if resp.status_code != 200 or not resp.json().get("status"):
-        # Roll back the pending ticket row so it doesn't sit around forever as noise.
         db.delete(ticket)
         db.commit()
         raise HTTPException(status_code=502, detail="Could not start payment with Paystack")
@@ -84,9 +77,6 @@ def init_checkout(payload: CheckoutInitRequest, db: Session = Depends(get_db)):
 
 @router.get("/tickets/status/{ticket_ref}", response_model=TicketStatusResponse)
 def get_ticket_status(ticket_ref: str, db: Session = Depends(get_db)):
-    # Used by the page the buyer lands on after Paystack redirects them back.
-    # The webhook is what actually confirms payment (see webhook.py) — this endpoint
-    # just lets the frontend show a real status instead of a blind "check your email".
     ticket = db.query(Ticket).filter(Ticket.ticket_ref == ticket_ref).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")

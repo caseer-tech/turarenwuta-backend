@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     from_email: str
 
     qr_secret: str
+    admin_key: str  # protects /admin/* endpoints — pick a long random string
 
     ticket_price_kobo: int = 2_500_000  # NGN 25,000 — Paystack amounts are always in kobo
     capacity: int = 500

@@ -27,4 +27,8 @@ class Ticket(Base):
     checked_in = Column(Boolean, nullable=False, default=False)
     checked_in_at = Column(DateTime, nullable=True)
 
+    # New: makes email failures visible and recoverable instead of silent.
+    email_sent = Column(Boolean, nullable=False, default=False)
+    email_error = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
