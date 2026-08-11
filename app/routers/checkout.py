@@ -14,26 +14,48 @@ router = APIRouter(tags=["checkout"])
 PAYSTACK_INIT_URL = "https://api.paystack.co/transaction/initialize"
 
 
-def _sold_count(db: Session) -> int:
-    return db.query(Ticket).filter(Ticket.payment_status == "paid").count()
+def _sold_count(db: Session, ticket_type: str | None = None) -> int:
+    q = db.query(Ticket).filter(Ticket.payment_status == "paid")
+    if ticket_type:
+        q = q.filter(Ticket.ticket_type == ticket_type)
+    return q.count()
 
 
 @router.get("/tickets/capacity", response_model=CapacityResponse)
 def get_capacity(db: Session = Depends(get_db)):
     sold = _sold_count(db)
+    vip_sold = _sold_count(db, "vip")
     remaining = max(settings.capacity - sold, 0)
+    vip_remaining = max(settings.vip_capacity - vip_sold, 0)
     return CapacityResponse(
         capacity=settings.capacity,
         sold=sold,
         remaining=remaining,
         sold_out=remaining == 0,
+        vip_capacity=settings.vip_capacity,
+        vip_sold=vip_sold,
+        vip_remaining=vip_remaining,
+        vip_sold_out=vip_remaining == 0,
     )
 
 
 @router.post("/checkout/init", response_model=CheckoutInitResponse)
 def init_checkout(payload: CheckoutInitRequest, db: Session = Depends(get_db)):
+    # Overall venue cap always applies, regardless of tier.
     if _sold_count(db) >= settings.capacity:
         raise HTTPException(status_code=409, detail="Event is sold out")
+
+    # VIP has its own smaller sub-cap on top of the overall cap. Regular tickets
+    # have no separate sub-cap of their own — they're naturally bounded by the
+    # overall total once VIP fills up, so unsold VIP seats never block sales.
+    if payload.ticket_type == "vip" and _sold_count(db, "vip") >= settings.vip_capacity:
+        raise HTTPException(status_code=409, detail="VIP tickets are sold out")
+
+    price = (
+        settings.ticket_price_kobo_vip
+        if payload.ticket_type == "vip"
+        else settings.ticket_price_kobo_regular
+    )
 
     ticket_ref = f"TWC2-{uuid.uuid4().hex[:8].upper()}"
 
@@ -44,7 +66,8 @@ def init_checkout(payload: CheckoutInitRequest, db: Session = Depends(get_db)):
         phone=payload.phone,
         payment_method=payload.payment_method,
         payment_status="pending",
-        amount_kobo=settings.ticket_price_kobo,
+        amount_kobo=price,
+        ticket_type=payload.ticket_type,
         paystack_reference=ticket_ref,
     )
     db.add(ticket)
@@ -57,11 +80,11 @@ def init_checkout(payload: CheckoutInitRequest, db: Session = Depends(get_db)):
         headers={"Authorization": f"Bearer {settings.paystack_secret_key}"},
         json={
             "email": payload.email,
-            "amount": settings.ticket_price_kobo,
+            "amount": price,
             "reference": ticket_ref,
             "channels": channels,
             "callback_url": settings.frontend_success_url,
-            "metadata": {"name": payload.name, "phone": payload.phone},
+            "metadata": {"name": payload.name, "phone": payload.phone, "ticket_type": payload.ticket_type},
         },
         timeout=15,
     )
