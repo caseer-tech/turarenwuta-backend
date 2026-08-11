@@ -7,6 +7,7 @@ class CheckoutInitRequest(BaseModel):
     email: EmailStr
     phone: str = Field(min_length=10)
     payment_method: Literal["card", "bank_transfer"]
+    ticket_type: Literal["regular", "vip"] = "regular"
 
 
 class CheckoutInitResponse(BaseModel):
@@ -19,6 +20,10 @@ class CapacityResponse(BaseModel):
     sold: int
     remaining: int
     sold_out: bool
+    vip_capacity: int
+    vip_sold: int
+    vip_remaining: int
+    vip_sold_out: bool
 
 
 class TicketStatusResponse(BaseModel):
