@@ -15,8 +15,10 @@ class Settings(BaseSettings):
     qr_secret: str
     admin_key: str  # protects /admin/* endpoints — pick a long random string
 
-    ticket_price_kobo: int = 2_500_000  # NGN 25,000 — Paystack amounts are always in kobo
+    ticket_price_kobo_regular: int = 2_500_000  # NGN 25,000
+    ticket_price_kobo_vip: int  # required — set explicitly, no silent default for a new price tier
     capacity: int = 500
+    vip_capacity: int = 20
 
     frontend_success_url: str
     allowed_origins: str = "http://localhost:5173"
