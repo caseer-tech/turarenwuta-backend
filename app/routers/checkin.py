@@ -1,8 +1,11 @@
-from datetime import datetime
+import hmac
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models import Ticket
 from app.qr_utils import verify_qr_token
@@ -11,26 +14,39 @@ from app.schemas import CheckinRequest, CheckinResponse
 router = APIRouter(tags=["checkin"])
 
 
-@router.post("/checkin", response_model=CheckinResponse)
+def require_staff(x_checkin_key: str | None = Header(default=None)) -> None:
+    if not settings.checkin_key:
+        raise HTTPException(status_code=503, detail="Staff check-in is not configured")
+    if not x_checkin_key or not hmac.compare_digest(x_checkin_key, settings.checkin_key):
+        raise HTTPException(status_code=401, detail="Invalid staff access key")
+
+
+@router.post("/checkin", response_model=CheckinResponse, dependencies=[Depends(require_staff)])
 def checkin(payload: CheckinRequest, db: Session = Depends(get_db)):
-    ticket = db.query(Ticket).filter(Ticket.ticket_ref == payload.ticket_ref).first()
-
-    if not ticket or ticket.payment_status != "paid":
-        return CheckinResponse(valid=False, already_checked_in=False, message="Ticket not found or unpaid")
-
-    if not verify_qr_token(ticket.ticket_ref, payload.token):
+    # Never allow the client to mark payment as completed.
+    # A conditional UPDATE is atomic even when two gate scanners act simultaneously.
+    if not verify_qr_token(payload.ticket_ref, payload.token):
         return CheckinResponse(valid=False, already_checked_in=False, message="Invalid ticket code")
 
+    ticket = db.query(Ticket).filter(Ticket.ticket_ref == payload.ticket_ref).first()
+    if ticket is None or ticket.payment_status != "paid" or not ticket.qr_token or not hmac.compare_digest(ticket.qr_token, payload.token):
+        return CheckinResponse(valid=False, already_checked_in=False, message="Ticket not found or unpaid")
+
     if ticket.checked_in:
-        return CheckinResponse(
-            valid=True,
-            already_checked_in=True,
-            name=ticket.name,
-            message=f"Already checked in at {ticket.checked_in_at}",
-        )
+        return CheckinResponse(valid=True, already_checked_in=True, name=ticket.name,
+                               message=f"Already checked in at {ticket.checked_in_at}")
 
-    ticket.checked_in = True
-    ticket.checked_in_at = datetime.utcnow()
+    timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
+    changed = db.execute(
+        update(Ticket).where(
+            Ticket.id == ticket.id,
+            Ticket.payment_status == "paid",
+            Ticket.checked_in.is_(False),
+        ).values(checked_in=True, checked_in_at=timestamp)
+    ).rowcount
     db.commit()
-
-    return CheckinResponse(valid=True, already_checked_in=False, name=ticket.name, message="Checked in")
+    if changed == 1:
+        return CheckinResponse(valid=True, already_checked_in=False, name=ticket.name, message="Checked in")
+    db.refresh(ticket)
+    return CheckinResponse(valid=True, already_checked_in=True, name=ticket.name,
+                           message=f"Already checked in at {ticket.checked_in_at}")
